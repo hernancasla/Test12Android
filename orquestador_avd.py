@@ -69,6 +69,9 @@ CONFIG = {
     "headless": True,          # -no-window
     "wipe_data": False,        # -wipe-data: arranque limpio en cada ejecución (más lento)
     "results_dir": "resultados",
+    # Número de VMs que deben ejecutarse. Si hay menos en la lista, la validación falla.
+    # None = las que haya.
+    "esperadas": 12,
 }
 
 ADB = "adb"
@@ -189,6 +192,58 @@ def build_flow(plan: dict, avd: str, actions: list, path: Path) -> None:
 
 
 # ----------------------------------------------------------------------------
+# Validación: ¿la app se ejecutó de verdad en esta VM?
+# ----------------------------------------------------------------------------
+MOTIVOS = {
+    "passed":         "OK",
+    "no_existe":      "El AVD no existe en este equipo (revisa el nombre en emulator -list-avds)",
+    "boot_failed":    "El emulador no terminó de arrancar",
+    "install_failed": "Falló la instalación del APK",
+    "app_no_abrio":   "La app no llegó a abrirse",
+    "crash":          "La app crasheó",
+    "anr":            "La app se colgó (ANR)",
+    "failed":         "Falló un paso de la prueba",
+    "test_timeout":   "Las pruebas superaron el tiempo máximo",
+    "no_ejecutada":   "No se llegó a ejecutar (ejecución interrumpida)",
+    "error":          "Error inesperado del orquestador",
+}
+
+
+def analyze_logcat(logcat: str, app_id: str) -> dict:
+    """Busca en el logcat si la app arrancó, crasheó o se colgó."""
+    info = {"abrio": False, "crash": None, "anr": None}
+    if not app_id:
+        return info
+    lines = logcat.splitlines()
+    for i, line in enumerate(lines):
+        if app_id in line and ("Displayed" in line or "START" in line or "Start proc" in line):
+            info["abrio"] = True
+        if "FATAL EXCEPTION" in line and info["crash"] is None:
+            bloque = lines[i:i + 4]
+            if any(f"Process: {app_id}" in l for l in bloque):
+                # La línea con la excepción suele ir justo después de "Process: ..."
+                exc = next((l for l in bloque if "Exception" in l or "Error" in l), bloque[-1])
+                info["crash"] = exc.split(": ", 1)[-1].strip()[:200]
+        if f"ANR in {app_id}" in line and info["anr"] is None:
+            info["anr"] = line.strip()[:200]
+    return info
+
+
+def failing_step(test_output: str) -> str:
+    """Extrae de la salida de Maestro la línea que explica el fallo."""
+    claves = ("Element not found", "Assertion is false", "Unable to launch",
+              "FAILED", "❌", "Error:")
+    for line in test_output.splitlines():
+        if any(k in line for k in claves):
+            return line.strip()[:200]
+    return ""
+
+
+def app_id_for(avd: str, cfg: dict, plan: dict) -> str:
+    return plan_for_avd(plan, avd)["appId"] if plan else cfg["package"]
+
+
+# ----------------------------------------------------------------------------
 # Ciclo de vida del emulador
 # ----------------------------------------------------------------------------
 def start_emulator(avd: str, port: int, cfg: dict, log_file) -> subprocess.Popen:
@@ -268,6 +323,7 @@ def run_avd(avd: str, cfg: dict, plan: dict, run_dir: Path) -> dict:
         try:
             if not wait_for_boot(serial, proc, cfg["boot_timeout"]):
                 result["status"] = "boot_failed"
+                result["detalle"] = f"Sin respuesta tras {cfg['boot_timeout']}s (ver emulator.log)"
                 log(f"✗ {avd}: no arrancó en {cfg['boot_timeout']}s")
                 return result
             log(f"{avd} arrancado en {time.time() - t0:.0f}s")
@@ -277,6 +333,8 @@ def run_avd(avd: str, cfg: dict, plan: dict, run_dir: Path) -> dict:
                 r = adb(serial, "install", "-r", "-g", cfg["apk"], timeout=300)
                 if "Success" not in r.stdout:
                     result["status"] = "install_failed"
+                    msg = (r.stdout + r.stderr).strip().splitlines()
+                    result["detalle"] = msg[-1][:200] if msg else ""
                     (out / "install.log").write_text(r.stdout + r.stderr)
                     log(f"✗ {avd}: fallo de instalación")
                     return result
@@ -293,9 +351,11 @@ def run_avd(avd: str, cfg: dict, plan: dict, run_dir: Path) -> dict:
                                              out=out.as_posix(), flow=flow)
             log(f"Ejecutando pruebas: {cmd}")
             env = {**os.environ, "ANDROID_SERIAL": serial}
+            test_output = ""
             try:
                 r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
                                    timeout=cfg["test_timeout"], env=env)
+                test_output = r.stdout + "\n" + r.stderr
                 (out / "tests.log").write_text(r.stdout + "\n--- STDERR ---\n" + r.stderr)
                 # am instrument devuelve 0 aunque fallen tests: miramos la salida
                 failed = r.returncode != 0 or "FAILURES!!!" in r.stdout
@@ -305,13 +365,28 @@ def run_avd(avd: str, cfg: dict, plan: dict, run_dir: Path) -> dict:
                 result["status"] = "test_timeout"
 
             # Evidencias
-            (out / "logcat.txt").write_text(adb(serial, "logcat", "-d", timeout=60).stdout)
+            logcat = adb(serial, "logcat", "-d", timeout=60).stdout
+            (out / "logcat.txt").write_text(logcat)
             with open(out / "screenshot.png", "wb") as f:
                 subprocess.run([ADB, "-s", serial, "exec-out", "screencap", "-p"],
                                stdout=f, timeout=30)
 
+            # Validación: el logcat confirma (o desmiente) que la app se ejecutó
+            app_id = app_id_for(avd, cfg, plan)
+            lc = analyze_logcat(logcat, app_id)
+            result["app_abrio"] = lc["abrio"]
+            if lc["crash"]:
+                result["status"], result["detalle"] = "crash", lc["crash"]
+            elif lc["anr"]:
+                result["status"], result["detalle"] = "anr", lc["anr"]
+            elif app_id and not lc["abrio"]:
+                result["status"] = "app_no_abrio"
+                result["detalle"] = failing_step(test_output)
+            elif result["status"] == "failed":
+                result["detalle"] = failing_step(test_output)
+
             mark = "✓" if result["status"] == "passed" else "✗"
-            log(f"{mark} {avd}: {result['status']}")
+            log(f"{mark} {avd}: {MOTIVOS.get(result['status'], result['status'])}")
             return result
         finally:
             stop_emulator(serial, proc)
@@ -330,6 +405,7 @@ def main() -> int:
     p.add_argument("--seed", help="Semilla del azar (p.ej. una fecha) para repetir una ejecución")
     p.add_argument("--dry-run", action="store_true",
                    help="Solo muestra y genera los flujos; no arranca emuladores")
+    p.add_argument("--esperadas", type=int, help="Número de VMs que deben ejecutarse (por defecto 12)")
     p.add_argument("--test-command")
     p.add_argument("--wipe-data", action="store_true")
     p.add_argument("--show-window", action="store_true", help="Ver el emulador (no headless)")
@@ -341,6 +417,7 @@ def main() -> int:
     if a.package: cfg["package"] = a.package
     if a.plan: cfg["plan"] = a.plan
     if a.seed: cfg["seed"] = a.seed
+    if a.esperadas is not None: cfg["esperadas"] = a.esperadas
     if a.test_command: cfg["test_command"] = a.test_command
     if a.wipe_data: cfg["wipe_data"] = True
     if a.show_window: cfg["headless"] = False
@@ -373,28 +450,76 @@ def main() -> int:
             print(f"  {avd:<25} {' -> '.join(r['acciones'])}\n  {'':<25} {flow}\n")
         return 0
 
-    log(f"{len(avds)} AVD(s): {', '.join(avds)}  →  resultados en {run_dir}")
+    # Los AVDs pedidos que no existen en este equipo cuentan como fallo, no se ignoran
+    existentes = set(list_avds())
+    results = [{"avd": avd, "status": "no_existe"} for avd in avds if avd not in existentes]
+    pendientes = [avd for avd in avds if avd in existentes]
 
-    results = []
-    for avd in avds:
+    log(f"{len(pendientes)} AVD(s) a ejecutar: {', '.join(pendientes)}  →  resultados en {run_dir}")
+
+    for i, avd in enumerate(pendientes):
         try:
             results.append(run_avd(avd, cfg, plan, run_dir))
         except KeyboardInterrupt:
             log("Interrumpido por el usuario")
+            results += [{"avd": x, "status": "no_ejecutada"} for x in pendientes[i:]]
             break
         except Exception as e:  # un AVD roto no debe parar al resto
             log(f"✗ {avd}: error inesperado: {e}")
-            results.append({"avd": avd, "status": "error", "error": str(e)})
+            results.append({"avd": avd, "status": "error", "detalle": str(e)[:200]})
 
-    (run_dir / "resumen.json").write_text(json.dumps(results, indent=2, ensure_ascii=False))
+    # Respetar el orden original de los AVDs en el informe
+    orden = {avd: i for i, avd in enumerate(avds)}
+    results.sort(key=lambda r: orden.get(r["avd"], len(orden)))
 
-    print("\n=== RESUMEN ===")
+    return report(results, cfg["esperadas"], run_dir)
+
+
+def report(results: list, esperadas: int, run_dir: Path) -> int:
+    """Valida que todas las VMs ejecutaron la app y muestra cuáles fallaron."""
+    ok = [r for r in results if r["status"] == "passed"]
+    ko = [r for r in results if r["status"] != "passed"]
+    total = max(esperadas or 0, len(results))
+    faltan = total - len(results)   # VMs esperadas que ni siquiera estaban en la lista
+
+    resumen = {
+        "fecha": datetime.now().isoformat(timespec="seconds"),
+        "esperadas": total,
+        "ok": len(ok),
+        "fallidas": len(ko) + faltan,
+        "validacion": "OK" if not ko and not faltan else "FALLIDA",
+        "vms": results,
+    }
+    (run_dir / "resumen.json").write_text(json.dumps(resumen, indent=2, ensure_ascii=False))
+
+    print("\n" + "=" * 78)
+    print(f" RESULTADO: {len(ok)}/{total} VMs ejecutaron la app correctamente")
+    print("=" * 78)
     for r in results:
+        mark = "✓" if r["status"] == "passed" else "✗"
         acciones = ", ".join(r.get("acciones", []))
-        print(f"  {r['avd']:<25} {r['status']:<15} {r.get('duration_s', '-'):>4}s  {acciones}")
-    ok = sum(r["status"] == "passed" for r in results)
-    print(f"  {ok}/{len(results)} OK")
-    return 0 if ok == len(results) else 1
+        dur = f"{r['duration_s']}s" if r.get("duration_s") else ""
+        print(f" {mark} {r['avd']:<26} {dur:>6}  {acciones}")
+
+    if ko or faltan:
+        print("\n VMs CON PROBLEMAS:")
+        for r in ko:
+            print(f"\n ✗ {r['avd']}")
+            print(f"     Motivo:     {MOTIVOS.get(r['status'], r['status'])}")
+            if r.get("detalle"):
+                print(f"     Detalle:    {r['detalle']}")
+            if r.get("acciones"):
+                print(f"     Acciones:   {', '.join(r['acciones'])}")
+                print(f"     Repetir:    --avds {r['avd']} --seed {r['semilla'].split('|', 1)[1]}")
+            if r["status"] not in ("no_existe", "no_ejecutada"):
+                print(f"     Evidencias: {(run_dir / r['avd']).as_posix()}/")
+        if faltan:
+            print(f"\n ✗ Faltan {faltan} VM(s): se esperaban {total} y solo había {len(results)} en la lista")
+        print(f"\n VALIDACIÓN FALLIDA: {len(ko) + faltan} de {total} VM(s) con problemas")
+    else:
+        print(f"\n VALIDACIÓN OK: las {total} VMs ejecutaron la app")
+    print(f" Informe: {(run_dir / 'resumen.json').as_posix()}\n")
+    return 0 if not ko and not faltan else 1
 
 
 if __name__ == "__main__":

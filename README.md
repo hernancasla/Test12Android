@@ -126,6 +126,44 @@ python orquestador_avd.py --plan plan.yaml --seed 2026-10-24
 
 El flujo generado queda en `resultados/<fecha>/<avd>/flujo.yaml`, y las acciones elegidas aparecen en `resumen.json`.
 
+## Validación de todas las VMs
+
+Al final de cada ejecución el orquestador valida que **las 12 VMs** (`esperadas` en `CONFIG` o `--esperadas N`) ejecutaron la app. Para cada VM no se fía solo del resultado de Maestro: revisa el **logcat** para confirmar que la app se abrió y detectar crashes o ANRs.
+
+```
+==============================================================================
+ RESULTADO: 9/12 VMs ejecutaron la app correctamente
+==============================================================================
+ ✓ VM_1        inicio_imagen_1, banner_promo, perfil_avatar
+ ✗ VM_7        perfil_avatar, banner_promo, galeria_primera
+ ...
+
+ VMs CON PROBLEMAS:
+
+ ✗ VM_7
+     Motivo:     La app crasheó
+     Detalle:    java.lang.NullPointerException: Attempt to invoke virtual method...
+     Acciones:   perfil_avatar, banner_promo, galeria_primera
+     Repetir:    --avds VM_7 --seed 2026-10-24
+     Evidencias: resultados/20261024_113610/VM_7/
+
+ VALIDACIÓN FALLIDA: 3 de 12 VM(s) con problemas
+```
+
+| Motivo           | Significado                                                        |
+|------------------|--------------------------------------------------------------------|
+| `no_existe`      | El AVD pedido no existe en el equipo                               |
+| `boot_failed`    | El emulador no terminó de arrancar a tiempo                        |
+| `install_failed` | Falló la instalación del APK                                       |
+| `app_no_abrio`   | En el logcat no aparece que la app se haya abierto                 |
+| `crash`          | La app lanzó una excepción fatal (se muestra cuál)                 |
+| `anr`            | La app se colgó                                                    |
+| `failed`         | Falló un paso de la prueba (se muestra cuál)                       |
+| `test_timeout`   | Las pruebas superaron el tiempo máximo                             |
+| `no_ejecutada`   | La ejecución se interrumpió antes de llegar a esa VM               |
+
+Si se esperan 12 VMs y en la lista hay menos, también se marca como fallo. El detalle completo queda en `resumen.json` (campo `validacion`: `OK` / `FALLIDA`), y el script termina con código `1` si alguna VM falla, de modo que en CI la ejecución se marca en rojo.
+
 ## Smoke tests con Maestro
 
 En `flows/smoke.yaml` hay un smoke test que comprueba que la app:
