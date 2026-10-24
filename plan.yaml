@@ -1,0 +1,80 @@
+# Plan de acciones aleatorias
+#
+# El orquestador elige para cada AVD `acciones_por_ejecucion` acciones al azar
+# (sin repetir) de su catálogo y genera un flujo: abrir app -> acciones -> salir.
+#
+# El azar usa como semilla "<avd>|<fecha>": cada VM hace algo distinto y cambia
+# cada día, pero se puede repetir un día concreto con --seed 2026-10-24.
+#
+# Cada acción es una lista de pasos de Maestro (https://docs.maestro.dev).
+# Para descubrir textos e ids reales de tu app: `maestro studio`.
+
+appId: com.miempresa.app          # <-- paquete de tu app
+acciones_por_ejecucion: 3
+
+# ---------------------------------------------------------------------------
+# Catálogo de acciones
+# ---------------------------------------------------------------------------
+acciones:
+
+  # --- Solapa Inicio ---
+  inicio_imagen_1:
+    - tapOn: "Inicio"                 # texto de la solapa
+    - tapOn:
+        id: "img_destacada_1"         # id de la imagen clickable
+    - pressKey: Back
+
+  inicio_imagen_2:
+    - tapOn: "Inicio"
+    - tapOn:
+        id: "img_destacada_2"
+    - pressKey: Back
+
+  # --- Solapa Galería ---
+  galeria_primera:
+    - tapOn: "Galería"
+    - tapOn:
+        id: "galeria_item"
+        index: 0                      # primera imagen de la lista
+    - pressKey: Back
+
+  galeria_scroll_y_tocar:
+    - tapOn: "Galería"
+    - scrollUntilVisible:
+        element:
+          id: "galeria_item"
+          index: 5
+        direction: DOWN
+    - tapOn:
+        id: "galeria_item"
+        index: 5
+    - pressKey: Back
+
+  # --- Solapa Perfil ---
+  perfil_avatar:
+    - tapOn: "Perfil"
+    - tapOn:
+        id: "img_avatar"
+    - pressKey: Back
+
+  # --- Imagen por descripción de accesibilidad ---
+  banner_promo:
+    - tapOn: "Inicio"
+    - tapOn: "Banner promocional"    # contentDescription de la imagen
+    - pressKey: Back
+
+# ---------------------------------------------------------------------------
+# Personalización por VM (opcional)
+# Un AVD que no aparece aquí usa todo el catálogo y el número por defecto.
+# El nombre debe coincidir con `emulator -list-avds`.
+# ---------------------------------------------------------------------------
+avds:
+
+  Pixel_7_API_34:
+    acciones: [inicio_imagen_1, inicio_imagen_2, galeria_primera, perfil_avatar]
+
+  Pixel_Tablet_API_34:
+    acciones: [galeria_primera, galeria_scroll_y_tocar, banner_promo, perfil_avatar, inicio_imagen_1]
+
+  Small_Phone_API_30:
+    acciones_por_ejecucion: 2       # este hace solo 2

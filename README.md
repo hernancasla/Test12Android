@@ -83,6 +83,49 @@ adb -s {serial} shell am instrument -w com.miempresa.app.test/androidx.test.runn
 dotnet test Tests.csproj --logger "trx;LogFileName={out}/results.trx"
 ```
 
+## Acciones aleatorias por VM y por día (`plan.yaml`)
+
+En `plan.yaml` defines un **catálogo de acciones** (tocar una solapa, tocar una imagen…). Para cada AVD el orquestador:
+
+1. elige al azar N acciones (3 por defecto, sin repetir) de su catálogo,
+2. genera un flujo de Maestro: **abrir app → acciones → salir**,
+3. lo ejecuta y guarda una captura después de cada acción.
+
+La semilla del azar es `<avd>|<fecha>`, así que cada VM hace algo distinto y la selección cambia cada día. A la vez es reproducible: si una ejecución falla, se puede repetir exactamente con `--seed`.
+
+```yaml
+appId: com.miempresa.app
+acciones_por_ejecucion: 3
+
+acciones:
+  inicio_imagen_1:
+    - tapOn: "Inicio"
+    - tapOn: { id: "img_destacada_1" }
+    - pressKey: Back
+  # ...
+
+avds:                       # opcional: catálogo / número propio por VM
+  Pixel_7_API_34:
+    acciones: [inicio_imagen_1, galeria_primera, perfil_avatar]
+  Small_Phone_API_30:
+    acciones_por_ejecucion: 2
+```
+
+```bash
+pip install -r requirements.txt
+
+# Ver qué haría cada VM hoy, sin arrancar emuladores
+python orquestador_avd.py --plan plan.yaml --dry-run
+
+# Ejecutar
+python orquestador_avd.py --plan plan.yaml --apk app-debug.apk
+
+# Repetir exactamente la ejecución de un día
+python orquestador_avd.py --plan plan.yaml --seed 2026-10-24
+```
+
+El flujo generado queda en `resultados/<fecha>/<avd>/flujo.yaml`, y las acciones elegidas aparecen en `resumen.json`.
+
 ## Smoke tests con Maestro
 
 En `flows/smoke.yaml` hay un smoke test que comprueba que la app:
