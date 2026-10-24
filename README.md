@@ -83,6 +83,32 @@ adb -s {serial} shell am instrument -w com.miempresa.app.test/androidx.test.runn
 dotnet test Tests.csproj --logger "trx;LogFileName={out}/results.trx"
 ```
 
+## Smoke tests con Maestro
+
+En `flows/smoke.yaml` hay un smoke test que comprueba que la app:
+
+1. arranca en limpio y muestra su pantalla principal (si crashea, falla),
+2. sobrevive a ir a segundo plano y volver,
+3. sobrevive a una rotación de pantalla.
+
+Antes de usarlo, cambia `appId` por el paquete de tu app y el texto `"Iniciar sesión"` por algo que siempre aparezca en tu primera pantalla.
+
+```bash
+# Instalar Maestro (macOS / Linux / WSL)
+curl -Ls "https://get.maestro.mobile.dev" | bash
+
+# Probar el flujo a mano contra un emulador ya arrancado
+maestro test flows/smoke.yaml
+
+# Inspector visual para descubrir textos e ids
+maestro studio
+
+# Smoke en todos los AVDs (es el test_command por defecto del orquestador)
+python orquestador_avd.py --apk app-debug.apk
+```
+
+Para añadir más comprobaciones, crea nuevos `.yaml` en `flows/`: el orquestador los ejecuta todos.
+
 ## Resultados
 
 ```

@@ -1,0 +1,43 @@
+# Smoke test: la app arranca, no crashea y muestra su pantalla principal.
+#
+# Ajusta:
+#   - appId: el paquete de tu app
+#   - los textos de assertVisible: algo que SIEMPRE aparezca en la primera pantalla
+#     (un título, un botón, el logo con su contentDescription...)
+#
+# Tip: `maestro studio` abre un inspector para ver textos e ids reales.
+appId: com.miempresa.app
+name: Smoke - arranque de la app
+tags:
+  - smoke
+---
+# 1. Arranque limpio
+- launchApp:
+    clearState: true
+    stopApp: true
+
+# 2. Espera a que la UI se estabilice (splash, animaciones)
+- waitForAnimationToEnd:
+    timeout: 10000
+
+# 3. La pantalla principal está visible
+#    Si la app crashea al arrancar, este paso falla.
+- extendedWaitUntil:
+    visible: "Iniciar sesión"   # <-- cambia por un texto de tu pantalla inicial
+    timeout: 15000
+
+- takeScreenshot: smoke_01_arranque
+
+# 4. Sobrevive a ir a segundo plano y volver
+- pressKey: Home
+- launchApp:
+    stopApp: false
+- assertVisible: "Iniciar sesión"
+
+# 5. Sobrevive a una rotación (útil en tablets)
+- setOrientation: LANDSCAPE
+- waitForAnimationToEnd
+- assertVisible: "Iniciar sesión"
+- setOrientation: PORTRAIT
+
+- takeScreenshot: smoke_02_fin
